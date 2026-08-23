@@ -1,3 +1,4 @@
+const { generatePreVisitSummary, generatePostVisitSummary } = require('./llm');
 const express = require('express');
 const { Pool } = require('pg');
 const { verifyToken, requireRole } = require('./middleware');
@@ -121,11 +122,12 @@ router.post('/book', verifyToken, requireRole('patient'), async (req, res) => {
       return res.status(410).json({ error: 'Your hold on this slot expired. Please pick a slot again.' });
     }
 
-    // create the real appointment (symptom_summary added by LLM in Phase 4 — placeholder for now)
+    const symptomSummary = await generatePreVisitSummary(symptoms);
+
     const result = await client.query(
       `INSERT INTO appointments (patient_id, doctor_id, appointment_date, appointment_time, symptom_summary)
        VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [req.user.id, doctor_id, appointment_date, appointment_time, JSON.stringify({ raw_symptoms: symptoms })]
+      [req.user.id, doctor_id, appointment_date, appointment_time, JSON.stringify(symptomSummary)]
     );
 
     // release the hold since it's now a real booking
@@ -145,6 +147,34 @@ router.post('/book', verifyToken, requireRole('patient'), async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   } finally {
     client.release();
+  }
+});
+
+
+// DOCTOR: submit post-visit notes + prescription, get AI patient-friendly summary
+router.post('/:id/complete', verifyToken, requireRole('doctor'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { clinical_notes, prescription } = req.body;
+    // prescription example: [{ "medicine": "Paracetamol", "dosage": "500mg", "frequency": "twice daily", "duration_days": 5 }]
+
+    const postVisitSummary = await generatePostVisitSummary(clinical_notes, prescription);
+
+    const result = await pool.query(
+      `UPDATE appointments SET status = 'completed', post_visit_summary = $1
+       WHERE id = $2 RETURNING *`,
+      [JSON.stringify({ clinical_notes, prescription, ai_summary: postVisitSummary }), id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
+    res.json({ message: 'Visit completed', appointment: result.rows[0] });
+    // NOTE: medication reminder scheduling gets added in Phase 5
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
