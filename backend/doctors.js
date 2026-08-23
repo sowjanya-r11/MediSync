@@ -74,9 +74,24 @@ router.post('/leave', verifyToken, requireRole('doctor'), async (req, res) => {
       [doctorId, leave_date, reason]
     );
 
-    res.status(201).json({ message: 'Leave day marked', leave: result.rows[0] });
-    // NOTE: in Phase 3, we'll add the logic here to check existing bookings on this date
-    // and notify affected patients — skipping that for now since bookings don't exist yet
+    // find any confirmed appointments on this date for this doctor
+    const affected = await pool.query(
+      `UPDATE appointments SET status = 'needs_reschedule'
+       WHERE doctor_id = $1 AND appointment_date = $2 AND status = 'confirmed'
+       RETURNING *`,
+      [doctorId, leave_date]
+    );
+
+    res.status(201).json({
+      message: 'Leave day marked',
+      leave: result.rows[0],
+      affected_appointments: affected.rows.length,
+      note: affected.rows.length > 0
+        ? `${affected.rows.length} patient(s) need to be notified and rescheduled`
+        : 'No existing bookings affected'
+    });
+    // Email notifications for these affected patients will be added in Phase 5
+    
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
