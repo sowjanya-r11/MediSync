@@ -1,5 +1,6 @@
 const express = require('express');
 const { Pool } = require('pg');
+const { queueEmail } = require('./queue');
 const { verifyToken, requireRole } = require('./middleware');
 require('dotenv').config();
 
@@ -82,14 +83,25 @@ router.post('/leave', verifyToken, requireRole('doctor'), async (req, res) => {
       [doctorId, leave_date]
     );
 
+    // notify each affected patient
+    for (const appt of affected.rows) {
+      const patientInfo = await pool.query('SELECT name, email FROM users WHERE id = $1', [appt.patient_id]);
+      await queueEmail(
+        patientInfo.rows[0].email,
+        'Appointment Needs Rescheduling - MediSync',
+        `Hi ${patientInfo.rows[0].name}, your doctor is unavailable on ${leave_date}. Please rebook your appointment.`
+      );
+    }
+
     res.status(201).json({
       message: 'Leave day marked',
       leave: result.rows[0],
       affected_appointments: affected.rows.length,
       note: affected.rows.length > 0
-        ? `${affected.rows.length} patient(s) need to be notified and rescheduled`
+        ? `${affected.rows.length} patient(s) notified and need to reschedule`
         : 'No existing bookings affected'
     });
+
     // Email notifications for these affected patients will be added in Phase 5
     
   } catch (err) {

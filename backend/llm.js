@@ -1,18 +1,14 @@
-const Anthropic = require('@anthropic-ai/sdk');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 require('dotenv').config();
 
-const client = new Anthropic({ apiKey: process.env.LLM_API_KEY });
+const genAI = new GoogleGenerativeAI(process.env.LLM_API_KEY);
+const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
 // Calls the LLM and always returns usable JSON, even if the AI call fails.
 async function callLLM(prompt, fallbackValue) {
   try {
-    const response = await client.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 500,
-      messages: [{ role: 'user', content: prompt }]
-    });
-
-    const text = response.content[0].text.trim();
+    const result = await model.generateContent(prompt);
+    const text = result.response.text().trim();
 
     // pull out just the { ... } part, ignoring any extra text before/after
     const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -23,7 +19,7 @@ async function callLLM(prompt, fallbackValue) {
     return JSON.parse(jsonMatch[0]);
   } catch (err) {
     console.error('LLM call failed:', err.message);
-    return fallbackValue;
+    return fallbackValue; // never throw — always return something usable
   }
 }
 

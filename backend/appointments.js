@@ -1,5 +1,7 @@
 const { generatePreVisitSummary, generatePostVisitSummary } = require('./llm');
 const express = require('express');
+const { queueEmail } = require('./queue');
+const { scheduleMedicationReminder } = require('./queue');
 const { Pool } = require('pg');
 const { verifyToken, requireRole } = require('./middleware');
 require('dotenv').config();
@@ -137,6 +139,23 @@ router.post('/book', verifyToken, requireRole('patient'), async (req, res) => {
     );
 
     await client.query('COMMIT');
+    // fetch patient and doctor email/name for the notification
+    const patientInfo = await pool.query('SELECT name, email FROM users WHERE id = $1', [req.user.id]);
+    const doctorInfo = await pool.query(
+      `SELECT u.name, u.email FROM users u JOIN doctor_profiles dp ON u.id = dp.user_id WHERE dp.id = $1`,
+      [doctor_id]
+    );
+
+    await queueEmail(
+      patientInfo.rows[0].email,
+      'Appointment Confirmed - MediSync',
+      `Hi ${patientInfo.rows[0].name}, your appointment with Dr. ${doctorInfo.rows[0].name} on ${appointment_date} at ${appointment_time} is confirmed.`
+    );
+    await queueEmail(
+      doctorInfo.rows[0].email,
+      'New Appointment Booked - MediSync',
+      `Hi Dr. ${doctorInfo.rows[0].name}, you have a new appointment on ${appointment_date} at ${appointment_time}.`
+    );
     res.status(201).json({ message: 'Appointment booked', appointment: result.rows[0] });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -170,8 +189,62 @@ router.post('/:id/complete', verifyToken, requireRole('doctor'), async (req, res
       return res.status(404).json({ error: 'Appointment not found' });
     }
 
+    // get patient info for reminders
+    const patientInfo = await pool.query('SELECT name, email FROM users WHERE id = $1', [result.rows[0].patient_id]);
+
+    // schedule reminders based on frequency (simple version: "twice daily" = every 12 hours, "once daily" = every 24 hours)
+    if (prescription && Array.isArray(prescription)) {
+      for (const med of prescription) {
+        const intervalHours = med.frequency && med.frequency.toLowerCase().includes('twice') ? 12 : 24;
+        const totalDoses = (med.duration_days || 1) * (24 / intervalHours);
+
+        for (let dose = 1; dose <= totalDoses; dose++) {
+          const delayMs = dose * intervalHours * 60 * 60 * 1000;
+          await scheduleMedicationReminder(patientInfo.rows[0].email, patientInfo.rows[0].name, med.medicine, delayMs);
+        }
+      }
+    }
+
     res.json({ message: 'Visit completed', appointment: result.rows[0] });
     // NOTE: medication reminder scheduling gets added in Phase 5
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// PATIENT or DOCTOR: cancel an appointment
+router.post('/:id/cancel', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await pool.query(
+      `UPDATE appointments SET status = 'cancelled' WHERE id = $1 RETURNING *`,
+      [id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+    const appt = result.rows[0];
+
+    const patientInfo = await pool.query('SELECT name, email FROM users WHERE id = $1', [appt.patient_id]);
+    const doctorInfo = await pool.query(
+      `SELECT u.name, u.email FROM users u JOIN doctor_profiles dp ON u.id = dp.user_id WHERE dp.id = $1`,
+      [appt.doctor_id]
+    );
+
+    await queueEmail(
+      patientInfo.rows[0].email,
+      'Appointment Cancelled - MediSync',
+      `Hi ${patientInfo.rows[0].name}, your appointment on ${appt.appointment_date} has been cancelled.`
+    );
+    await queueEmail(
+      doctorInfo.rows[0].email,
+      'Appointment Cancelled - MediSync',
+      `Hi Dr. ${doctorInfo.rows[0].name}, the appointment on ${appt.appointment_date} has been cancelled.`
+    );
+
+    res.json({ message: 'Appointment cancelled', appointment: appt });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

@@ -1,5 +1,10 @@
 {
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.120.0"
+    "@anthropic-ai/sdk": "^0.120.0",
+    "@google/generative-ai": "^0.24.1",
+    "bullmq": "^6.2.0",
+    "googleapis": "^176.0.0",
+    "ioredis": "^6.0.0",
+    "nodemailer": "^9.0.5"
   }
 }
