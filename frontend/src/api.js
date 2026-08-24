@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 const api = axios.create({
-  baseURL: 'https://medisync-tnk0.onrender.com'
+  baseURL: 'https://medisync-tnk0.onrender.com/api'
 });
 
 // automatically attach the token to every request, if logged in
